@@ -2,7 +2,10 @@ name: Python CI/CD
  
 on:
   push:
-    branches: [ "main" ]
+    branches: 
+      - main
+      - dev
+      - feature
   workflow_dispatch:
  
 jobs:
