@@ -1,0 +1,310 @@
+# =======================================================================
+# CI/CD for dev → qa → uat → preprod → prod using GitHub Actions + PRs
+# One artifact is built in dev and promoted unchanged to higher envs.
+# Environment-specific hostnames & secrets are handled via GitHub Environments.
+# =======================================================================
+
+name: CI/CD
+
+# -----------------------------
+# Triggers: on PRs and on merges
+# -----------------------------
+on:
+  pull_request:                     # Run CI on PRs that target any of these branches
+    branches: [ dev, qa, uat, preprod, prod ]
+  push:                              # After a PR is merged, deploy automatically
+    branches: [ dev, qa, uat, preprod, prod ]
+  workflow_dispatch:                 # Allow manual runs as a fallback
+
+# --------------------------------------------
+# Prevent overlapping runs per branch (safety)
+# --------------------------------------------
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# -----------------------------------------
+# Tightened permissions (principle of least)
+# -----------------------------------------
+permissions:
+  contents: read
+  actions: read
+  checks: write
+  deployments: write
+  id-token: write          # for cloud OIDC (if you use it)
+  packages: read
+  security-events: write
+
+# -------------------
+# Global environment
+# -------------------
+env:
+  # Version is set later to <branch>-<run_number>-<short_sha>
+  ARTIFACT_NAME: app-package.tar.gz   # adjust if you prefer zip
+  ARTIFACT_DIR: build-output          # your build output directory
+  HEALTH_PATH: /health                # endpoint used for smoke tests
+
+jobs:
+
+  # ==============================================================
+  # Build & Test job (runs on PR and Push for the target branches)
+  # ==============================================================
+  build_test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout code
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed if you compute version from git tags/history
+
+      # (Optional) Setup your language/toolchain here
+      # - name: Setup Node
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '20'
+
+      # Cache example (customize to your ecosystem)
+      # - name: Cache dependencies
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: ~/.npm
+      #     key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-node-
+
+      # Install dependencies (customize for your project)
+      - name: Install dependencies
+        run: |
+          echo ">> Install your dependencies here (npm ci / mvn -B -DskipTests=false / dotnet restore / pip install -r ...)"
+          # Example: npm ci
+
+      # Run tests (unit, lint, etc)
+      - name: Run tests
+        run: |
+          echo ">> Run your tests here (npm test / mvn test / dotnet test / pytest ...)"
+          # Example: npm test
+
+      # (Optional) Security/static analysis goes here
+      # - name: SAST / CodeQL / Trivy / etc.
+      #   run: echo "Run your scanners here"
+
+      # Build/package the artifact once (identical for all envs)
+      - name: Build artifact
+        run: |
+          echo ">> Build your app and put compiled output in ${ARTIFACT_DIR}"
+          mkdir -p ${ARTIFACT_DIR}
+          # Example: npm run build && cp -r dist/* ${ARTIFACT_DIR}/
+          # Example: mvn -B -DskipTests package && cp target/*.jar ${ARTIFACT_DIR}/
+
+      # Compute version (branch-run-sha)
+      - name: Compute version
+        id: ver
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-8)
+          echo "VERSION=${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}" >> $GITHUB_ENV
+          echo "version=${GITHUB_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      # Pack artifact
+      - name: Create tarball
+        run: |
+          tar -czf ${ARTIFACT_NAME} -C ${ARTIFACT_DIR} .
+          echo "Created ${ARTIFACT_NAME} for version $VERSION"
+
+      # Upload artifact so deploy jobs can download the exact same build
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_NAME }}
+          retention-days: 7
+
+  # =====================================================================
+  # Deployment jobs (one per environment). Each runs only on its branch.
+  # Promotion is via PR merges between branches (dev→qa→uat→preprod→prod).
+  # Hostnames and secrets come from GitHub Environment variables/secrets.
+  # =====================================================================
+
+  deploy_dev:
+    name: Deploy to DEV
+    needs: build_test
+    if: github.event_name == 'push' && github.ref_name == 'dev'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: https://${{ vars.APP_HOSTNAME }}   # surfaced in UI; set APP_HOSTNAME in env 'dev'
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+
+      - name: Install tools (for templating/smoke tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext-base curl jq
+
+      # Optional: template environment-specific config from a single template
+      - name: Generate runtime config from template
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          # If you keep 'config/app.config.tpl' with tokens like ${APP_HOSTNAME}
+          # envsubst < config/app.config.tpl > config/app.config || true
+          echo "Using APP_HOSTNAME=${APP_HOSTNAME} for DEV"
+
+      - name: Deploy (replace with your real deploy command)
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+        run: |
+          echo ">> Deploying ${ARTIFACT_NAME} to DEV (${APP_HOSTNAME})"
+          # Example placeholders (customize to k8s/VM/Functions/etc.)
+          # kubectl --namespace ${vars.K8S_NAMESPACE} apply -f k8s/manifests
+          # or scp + ssh, helm upgrade, azure/webapp deploy, etc.
+          echo "Deployment simulated."
+
+      - name: Post-deploy smoke test
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          HEALTH_PATH: ${{ env.HEALTH_PATH }}
+        run: |
+          echo ">> Probing https://${APP_HOSTNAME}${HEALTH_PATH}"
+          for i in {1..10}; do
+            curl -skf "https://${APP_HOSTNAME}${HEALTH_PATH}" && exit 0 || sleep 6
+          done
+          echo "Health check failed"; exit 1
+
+  deploy_qa:
+    name: Deploy to QA
+    needs: build_test
+    if: github.event_name == 'push' && github.ref_name == 'qa'
+    runs-on: ubuntu-latest
+    environment:
+      name: qa                     # add approval rules in GitHub → Environments → qa
+      url: https://${{ vars.APP_HOSTNAME }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+      - run: sudo apt-get update && sudo apt-get install -y gettext-base curl jq
+      - name: Generate runtime config
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          echo "Using APP_HOSTNAME=${APP_HOSTNAME} for QA"
+      - name: Deploy
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+        run: |
+          echo ">> Deploying ${ARTIFACT_NAME} to QA (${APP_HOSTNAME})"
+          echo "Deployment simulated."
+      - name: Smoke test
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          HEALTH_PATH: ${{ env.HEALTH_PATH }}
+        run: |
+          for i in {1..10}; do curl -skf "https://${APP_HOSTNAME}${HEALTH_PATH}" && exit 0 || sleep 6; done
+          echo "Health check failed"; exit 1
+
+  deploy_uat:
+    name: Deploy to UAT
+    needs: build_test
+    if: github.event_name == 'push' && github.ref_name == 'uat'
+    runs-on: ubuntu-latest
+    environment:
+      name: uat
+      url: https://${{ vars.APP_HOSTNAME }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+      - run: sudo apt-get update && sudo apt-get install -y gettext-base curl jq
+      - name: Generate runtime config
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          echo "Using APP_HOSTNAME=${APP_HOSTNAME} for UAT"
+      - name: Deploy
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+        run: |
+          echo ">> Deploying ${ARTIFACT_NAME} to UAT (${APP_HOSTNAME})"
+          echo "Deployment simulated."
+      - name: Smoke test
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          HEALTH_PATH: ${{ env.HEALTH_PATH }}
+        run: |
+          for i in {1..10}; do curl -skf "https://${APP_HOSTNAME}${HEALTH_PATH}" && exit 0 || sleep 6; done
+          echo "Health check failed"; exit 1
+
+  deploy_preprod:
+    name: Deploy to PREPROD
+    needs: build_test
+    if: github.event_name == 'push' && github.ref_name == 'preprod'
+    runs-on: ubuntu-latest
+    environment:
+      name: preprod
+      url: https://${{ vars.APP_HOSTNAME }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+      - run: sudo apt-get update && sudo apt-get install -y gettext-base curl jq
+      - name: Generate runtime config
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          echo "Using APP_HOSTNAME=${APP_HOSTNAME} for PREPROD"
+      - name: Deploy
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+        run: |
+          echo ">> Deploying ${ARTIFACT_NAME} to PREPROD (${APP_HOSTNAME})"
+          echo "Deployment simulated."
+      - name: Smoke test
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          HEALTH_PATH: ${{ env.HEALTH_PATH }}
+        run: |
+          for i in {1..10}; do curl -skf "https://${APP_HOSTNAME}${HEALTH_PATH}" && exit 0 || sleep 6; done
+          echo "Health check failed"; exit 1
+
+  deploy_prod:
+    name: Deploy to PROD
+    needs: build_test
+    if: github.event_name == 'push' && github.ref_name == 'prod'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod                  # protect with required reviewers/approvals
+      url: https://${{ vars.APP_HOSTNAME }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+      - run: sudo apt-get update && sudo apt-get install -y gettext-base curl jq
+      - name: Generate runtime config
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          echo "Using APP_HOSTNAME=${APP_HOSTNAME} for PROD"
+      - name: Deploy
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+        run: |
+          echo ">> Deploying ${ARTIFACT_NAME} to PROD (${APP_HOSTNAME})"
+          echo "Deployment simulated."
+      - name: Smoke test
+        env:
+          APP_HOSTNAME: ${{ vars.APP_HOSTNAME }}
+          HEALTH_PATH: ${{ env.HEALTH_PATH }}
+        run: |
+          for i in {1..10}; do curl -skf "https://${APP_HOSTNAME}${HEALTH_PATH}" && exit 0 || sleep 6; done
+          echo "Health check failed"; exit 1
