@@ -25,6 +25,7 @@ jobs:
       run : |
         pip install pipreqs
         pip install -r requirements.txt
+      working-directory: actions-runner/_work/_actions/actions/setup-python/v5/__tests__/data
  
     - name: Run my.py
       run: python my.py
