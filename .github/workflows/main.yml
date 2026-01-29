@@ -39,4 +39,43 @@ jobs:
       with:
         name : python-build
         path : src/
+
+   cd:
+    needs: ci
+    runs-on: Agent-dev
+ 
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: app-build
+ 
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key.pem
+        chmod 600 ~/.ssh/ec2_key.pem
+        ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+ 
+    - name: Copy artifact to EC2
+      run: |
+        scp -i ~/.ssh/ec2_key.pem app.zip ec2-user@${{ secrets.EC2_HOST }}:/home/ec2-user/app.zip
+ 
+    - name: Deploy & install dependencies on EC2
+      run: |
+        ssh -i ~/.ssh/ec2_key.pem ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
+          mkdir -p /home/ec2-user/app
+          cd /home/ec2-user/app
+          unzip -o ../app.zip
+ 
+          sudo yum install -y python3-pip
+ 
+          python3 -m venv venv
+          source venv/bin/activate
+ 
+          pip install -r requirements.txt
+ 
+          pkill -f app.py || true
+          nohup python app.py > app.log 2>&1 &
+        EOF
      
