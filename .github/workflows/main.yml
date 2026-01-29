@@ -40,7 +40,7 @@ jobs:
         name : python-build
         path : src/
 
-   cd:
+  cd:
     needs: ci
     runs-on: Agent-dev
  
