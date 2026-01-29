@@ -27,7 +27,7 @@ jobs:
     - name: Run tests
       run: pytest
  
-     - name: Build artifact
+    - name: Build artifact
       run: zip -r app.zip .
  
     - name: Upload artifact
