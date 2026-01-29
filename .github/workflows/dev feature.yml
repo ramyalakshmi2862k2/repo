@@ -7,8 +7,7 @@ on:
   workflow_dispatch:
  
 jobs:
-  ci:
-    name: CI - Build & Test
+    ci:
     runs-on: Agent-dev
  
     steps:
