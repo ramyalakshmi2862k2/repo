@@ -28,7 +28,7 @@ jobs:
     - name : create directory
       run : | 
          mkdir -p src
-         cp guess.py src/
+         cp my.py src/
  
     - name: Run tests
       run: |
