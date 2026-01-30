@@ -9,9 +9,10 @@ def roll_dice():
 
 # Example usage:
 if __name__ == "__main__":
+    print ("Ramya")
     print("Rolling the die...")
     result = roll_dice()
-    print(f"The die rolled a: {result}")
+    print(f"The die rolled a win number : {result}")
 
     # You can also simulate multiple rolls or multiple dice
     print("\nRolling two dice:")
