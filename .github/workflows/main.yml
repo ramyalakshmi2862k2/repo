@@ -10,7 +10,7 @@ on:
  
 jobs:
   ci:
-    runs-on: Agent-dev
+    runs-on: ubuntu-latest
  
     steps:
     - name: Checkout code
@@ -42,7 +42,7 @@ jobs:
 
   cd:
     needs: ci
-    runs-on: Agent-dev
+    runs-on: ubuntu-latest
  
     steps:
     - name: Download artifact
