@@ -21,9 +21,7 @@ jobs:
         distribution: 'temurin'
         cache: maven
     - name: Build with Maven
-      run: |
-          pwd
-          mvn compile 
+      run: mvn compile 
 
   security-check :
    runs-on : ubuntu-latest
